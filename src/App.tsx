@@ -1,14 +1,10 @@
+import { useEffect, useMemo, useState } from "react";
 import { IntlProvider } from "react-intl";
-import translations from "../translations.json";
+import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
 
-import { type FC, useEffect, useState } from "react";
-import {
-  BrowserRouter,
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-} from "react-router-dom";
+import translations from "../translations.json";
+import { getCookie } from "./lib";
+import { geoService } from "./lib/geo-service";
 
 import {
   ArticleAr,
@@ -21,77 +17,98 @@ import {
   Home,
 } from "./pages";
 
-const ScrollToTop: FC = () => {
-  const { pathname } = useLocation();
-
-  useEffect(() => {
-    window.scrollTo(0, 0);
-  }, [pathname]);
-
-  return null;
-};
+const supportedLocales = ["en", "ru", "ar"] as const;
+type Locale = (typeof supportedLocales)[number];
 
 function getMessagesForLocale(
   allTranslations: Record<string, Record<string, string>>,
   locale: string
 ): Record<string, string> {
   const messages: Record<string, string> = {};
-
-  Object.entries(allTranslations).forEach(([key, translationsByLang]) => {
-    if (translationsByLang[locale]) {
-      messages[key] = translationsByLang[locale];
-    } else {
-      messages[key] = translationsByLang["en"] || "";
-    }
-  });
-
+  for (const [key, translationsByLang] of Object.entries(allTranslations)) {
+    messages[key] = translationsByLang[locale] || translationsByLang["en"] || "";
+  }
   return messages;
 }
 
+async function detectLocale(): Promise<Locale> {
+  // 1. From URL
+  const urlLocaleMatch = window.location.pathname.match(/^\/(en|ru|ar)(\/|$)/);
+  if (urlLocaleMatch?.[1]) return urlLocaleMatch[1] as Locale;
+
+  // 2. From Cookie
+  const cookieLocale = getCookie("i18n-l10n-conf-lang");
+  if (supportedLocales.includes(cookieLocale as Locale)) {
+    return cookieLocale as Locale;
+  }
+
+  // 3. From browser
+  const browserLang = navigator.language.split("-")[0];
+  if (supportedLocales.includes(browserLang as Locale)) {
+    return browserLang as Locale;
+  }
+
+  // 4. From geo-service
+  try {
+    const region = geoService.getCurrentRegion(window.location.search);
+    if (region === "RU") return "ru";
+    if (["AE", "SA", "EG"].includes(region)) return "ar";
+  } catch (err) {
+    console.warn("GeoService failed", err);
+  }
+
+  return "en"; // Fallback
+}
+
+const ScrollToTop = () => {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pathname]);
+  return null;
+};
+
+function AppRoutes({ locale }: { locale: Locale }) {
+  return (
+    <Routes>
+      <Route path="/" element={<Navigate to={`/${locale}`} replace />} />
+      <Route path="/:locale">
+        <Route index element={<Home />} />
+        <Route path="article/rtl-icons" element={<ArticleRtlIcons />} />
+        <Route path="article/css" element={<ArticleCss />} />
+        <Route path="article/l10n-ru" element={<ArticleL10nRu />} />
+        <Route path="article/ui-by" element={<ArticleUiBy />} />
+        <Route path="article/i18n-kz" element={<ArticleI18nKz />} />
+        <Route path="article/en" element={<ArticleEn />} />
+        <Route path="article/ar" element={<ArticleAr />} />
+        <Route path="*" element={<Navigate to={`/${locale}`} replace />} />
+      </Route>
+    </Routes>
+  );
+}
+
 function App() {
-  const [locale, setLocale] = useState<"en" | "ru" | "ar">("en");
+  const [locale, setLocale] = useState<Locale | null>(null);
 
   useEffect(() => {
-    document.documentElement.lang = locale;
-    document.documentElement.dir = locale === "ar" ? "rtl" : "ltr";
+    detectLocale().then((detected) => {
+      setLocale(detected);
+      document.documentElement.lang = detected;
+      document.documentElement.dir = detected === "ar" ? "rtl" : "ltr";
+    });
+  }, []);
+
+  const messages = useMemo(() => {
+    return locale ? getMessagesForLocale(translations, locale) : {};
   }, [locale]);
 
+  if (!locale) return null; // Or show loader
+
   return (
-    <IntlProvider
-      locale={locale}
-      messages={getMessagesForLocale(translations, locale)}
-      defaultLocale="en"
-    >
+    <IntlProvider locale={locale} messages={messages} defaultLocale="en">
       <BrowserRouter>
         <ScrollToTop />
-
-        <div style={{ padding: "10px", borderBottom: "1px solid #ccc" }}>
-          <button onClick={() => setLocale("en")} disabled={locale === "en"}>
-            English
-          </button>
-          <button onClick={() => setLocale("ru")} disabled={locale === "ru"} style={{ marginLeft: 10 }}>
-            Русский
-          </button>
-          <button onClick={() => setLocale("ar")} disabled={locale === "ar"} style={{ marginLeft: 10 }}>
-            العربية
-          </button>
-        </div>
-
-        <Routes>
-          <Route path="/">
-            <Route index element={<Home />} />
-            <Route path="article">
-              <Route path="rtl-icons" element={<ArticleRtlIcons />} />
-              <Route path="css" element={<ArticleCss />} />
-              <Route path="l10n-ru" element={<ArticleL10nRu />} />
-              <Route path="ui-by" element={<ArticleUiBy />} />
-              <Route path="i18n-kz" element={<ArticleI18nKz />} />
-              <Route path="en" element={<ArticleEn />} />
-              <Route path="ar" element={<ArticleAr />} />
-            </Route>
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
+        <AppRoutes locale={locale} />
       </BrowserRouter>
     </IntlProvider>
   );
